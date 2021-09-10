@@ -1,0 +1,93 @@
+---
+- name: Setup for keepass
+  hosts: localhost
+  remote_user: root
+
+  tasks:
+  - name: Install required modules
+    become: true
+    apt:
+      name: 
+        - socat
+        - p7zip-full
+      state: present
+      update-cache: true
+
+  - name: Get wsl-ssh-agent
+    become: true
+    args:
+      creates: /usr/local/bin/npiperelay.exe
+      warn: false # Don't warn about wget; I'm lazy and don't want another command right now.
+    shell: |
+      wget https://github.com/rupor-github/wsl-ssh-agent/releases/download/v1.5.2/wsl-ssh-agent.zip -P /tmp
+      sudo 7z e -y /tmp/wsl-ssh-agent.zip -o/usr/local/bin/
+      sudo chmod +x /usr/local/bin/npiperelay.exe
+      rm /tmp/wsl-ssh-agent.zip
+
+  - name: Create ~/bin
+    file:
+      path: ~/bin
+      state: directory
+      mode: '0755'
+
+  - name: Create ~/bin/wsl-agent-forwarder
+    copy:
+      mode: u+wrx
+      dest: ~/bin/wsl-agent-forwarder
+      content: |
+        #!/bin/bash
+        # Usage: wsl-ssh-agent-forward [ -k | -r ]
+        # Options:
+        #    -k    Kill the current process (if exists) and do not restart it.
+        #    -r    Kill the current process (if exists) and restart it.
+        # Default operation is to start a process only if it does not exist.
+
+        export SSH_AUTH_SOCK=$HOME/.ssh/agent.sock
+
+        sshpid=$(ss -ap | grep "$SSH_AUTH_SOCK")
+        if [ "$1" = "-k" ] || [ "$1" = "-r" ]; then
+            sshpid=${sshpid//*pid=/}
+            sshpid=${sshpid%%,*}
+            if [ -n "${sshpid}" ]; then
+                kill "${sshpid}"
+            else
+                echo "'socat' not found or PID not found"
+            fi
+            if [ "$1" = "-k" ]; then
+                exit
+            fi
+            unset sshpid
+        fi
+
+        if [ -z "${sshpid}" ]; then
+            rm -f $SSH_AUTH_SOCK
+            ( setsid socat UNIX-LISTEN:$SSH_AUTH_SOCK,fork EXEC:"/usr/local/bin/npiperelay.exe -ei -s //./pipe/openssh-ssh-agent",nofork & ) >/dev/null 2>&1
+        fi
+
+#Add to .bashrc:
+#
+## KeeAgent
+#. ~/bin/wsl-ssh-agent-forwarder
+  - name: Add forwarder to .bashrc
+    lineinfile:
+      path: ~/.bashrc
+      line: . ~/bin/wsl-agent-forwarder
+      create: yes
+
+#Make sure socket exists:
+#
+#mkdir -p $HOME/.ssh
+#touch $HOME/.ssh/agent.sock
+  - name: Create ~/.ssh
+    file:
+      path: ~/.ssh
+      state: directory
+      mode: '0700'
+
+  - name: Ensure socket exists
+    file:
+      path: ~/.ssh/agent.sock
+      state: touch
+      modification_time: preserve
+      access_time: preserve
+
